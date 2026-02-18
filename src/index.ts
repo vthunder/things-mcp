@@ -37,11 +37,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 });
 
 // Handler for executing tools
+const TOOL_CALL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
 server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
   const { name, arguments: args } = request.params;
-  
+
+  const timeout = new Promise<CallToolResult>((_, reject) =>
+    setTimeout(() => reject(new Error(`Tool call '${name}' timed out after 5 minutes`)), TOOL_CALL_TIMEOUT_MS)
+  );
+
   try {
-    return await toolRegistry.executeHandler(name, args || {});
+    return await Promise.race([
+      toolRegistry.executeHandler(name, args || {}),
+      timeout,
+    ]);
   } catch (error) {
     // Fallback error handling for unexpected registry errors
     return {
@@ -59,17 +68,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
 // Initialize server
 async function main() {
   try {
-    // Check if Things is available
-    const thingsAvailable = await testThingsAvailable();
-    if (!thingsAvailable) {
-      console.error('Warning: Things 3 does not appear to be running');
-    }
-    
-    // Start server
+    // Start server immediately - don't block on Things availability check
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    
+
     console.error('Things MCP server started successfully');
+
+    // Check if Things is available asynchronously (non-blocking)
+    // This allows permissions dialogs to appear without blocking startup
+    testThingsAvailable().then(thingsAvailable => {
+      if (!thingsAvailable) {
+        console.error('Warning: Things 3 does not appear to be running');
+      }
+    }).catch(err => {
+      console.error('Warning: Could not check Things availability:', err.message);
+    });
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
